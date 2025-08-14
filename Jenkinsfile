@@ -46,33 +46,68 @@ pipeline {
                             # Test SSH connection first
                             ssh -i \$SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${EC2_USER}@${EC2_HOST} 'echo "SSH connection successful"'
                             
-                            # Sync files to EC2 (excluding sensitive files)
-                            rsync -avz --delete \
-                                -e "ssh -i \$SSH_KEY -o StrictHostKeyChecking=no" \
-                                --exclude '.git' \
-                                --exclude 'node_modules' \
-                                --exclude '.env' \
-                                --exclude '*.log' \
-                                ./ ${EC2_USER}@${EC2_HOST}:/home/${EC2_USER}/${APP_NAME}/
+                            # Create app directory on EC2 if it doesn't exist
+                            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "mkdir -p /home/${EC2_USER}/${APP_NAME}"
+                            
+                            # Check if rsync is available, otherwise use tar+ssh method
+                            if command -v rsync >/dev/null 2>&1; then
+                                echo "Using rsync for file transfer..."
+                                rsync -avz --delete \
+                                    -e "ssh -i \$SSH_KEY -o StrictHostKeyChecking=no" \
+                                    --exclude '.git' \
+                                    --exclude 'node_modules' \
+                                    --exclude '.env' \
+                                    --exclude '*.log' \
+                                    --exclude '.DS_Store' \
+                                    --exclude 'coverage' \
+                                    --exclude 'dist' \
+                                    ./ ${EC2_USER}@${EC2_HOST}:/home/${EC2_USER}/${APP_NAME}/
+                            else
+                                echo "rsync not found, using tar+ssh method..."
+                                tar --exclude='.git' \
+                                    --exclude='node_modules' \
+                                    --exclude='.env' \
+                                    --exclude='*.log' \
+                                    --exclude='.DS_Store' \
+                                    --exclude='coverage' \
+                                    --exclude='dist' \
+                                    -czf - ./ | \
+                                ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                                "cd /home/${EC2_USER}/${APP_NAME} && tar --overwrite -xzf -"
+                            fi
                             
                             # Deploy on EC2
                             ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
                                 cd /home/${EC2_USER}/${APP_NAME} &&
                                 
+                                # Check if package.json exists
+                                if [ ! -f package.json ]; then
+                                    echo 'Error: package.json not found in deployed files'
+                                    exit 1
+                                fi &&
+                                
                                 # Install dependencies
+                                echo 'Installing dependencies...' &&
                                 npm install --production &&
                                 
                                 # Install PM2 if not already installed
-                                which pm2 || npm install -g pm2 &&
+                                if ! command -v pm2 >/dev/null 2>&1; then
+                                    echo 'Installing PM2...'
+                                    npm install -g pm2
+                                fi &&
                                 
                                 # Stop existing app (ignore errors if not running)
-                                pm2 stop ${APP_NAME} || true &&
-                                pm2 delete ${APP_NAME} || true &&
+                                echo 'Stopping existing application...' &&
+                                pm2 stop ${APP_NAME} 2>/dev/null || true &&
+                                pm2 delete ${APP_NAME} 2>/dev/null || true &&
                                 
                                 # Start the application
+                                echo 'Starting application with PM2...' &&
                                 pm2 start npm --name '${APP_NAME}' -- start &&
                                 pm2 save &&
-                                pm2 list
+                                pm2 list &&
+                                
+                                echo 'Deployment completed successfully!'
                             "
                         """
                     }
@@ -85,10 +120,23 @@ pipeline {
                 script {
                     sh """
                         echo "Waiting for application to start..."
-                        sleep 10
+                        sleep 15
                         
-                        # Check if the application is responding
-                        curl -f http://${EC2_HOST}:3000 || echo "Health check failed, but continuing..."
+                        # Multiple health check attempts
+                        for i in {1..3}; do
+                            echo "Health check attempt \$i..."
+                            if curl -f --connect-timeout 5 --max-time 10 http://${EC2_HOST}:3000; then
+                                echo "Health check passed!"
+                                exit 0
+                            else
+                                echo "Health check failed, attempt \$i"
+                                sleep 5
+                            fi
+                        done
+                        
+                        echo "All health checks failed, but deployment may still be successful"
+                        # Don't fail the pipeline for health check issues
+                        exit 0
                     """
                 }
             }
@@ -100,9 +148,17 @@ pipeline {
         }
         success {
             echo '✅ Deployment successful!'
+            script {
+                // Optional: Send notification
+                // slackSend channel: '#deployments', message: "✅ ${APP_NAME} deployed successfully to ${EC2_HOST}"
+            }
         }
         failure {
             echo '❌ Deployment failed!'
+            script {
+                // Optional: Send failure notification
+                // slackSend channel: '#deployments', message: "❌ ${APP_NAME} deployment failed. Check Jenkins logs."
+            }
         }
     }
 }
