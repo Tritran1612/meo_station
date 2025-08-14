@@ -44,23 +44,49 @@ pipeline {
         stage('Deploy to EC2') {
             steps {
                 echo '🚀 Deploying application to EC2...'
-                sshagent (credentials: ["${EC2_SSH_KEY}"]) {
-                    sh """
-                        rsync -avz --delete \
-                            --exclude '.git' \
-                            --exclude 'node_modules' \
-                            ./ ${EC2_USER}@${EC2_HOST}:/home/${EC2_USER}/${APP_NAME}
-
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} '
-                            cd /home/${EC2_USER}/${APP_NAME} &&
-                            npm install --production &&
-                            pm2 stop ${APP_NAME} || true &&
-                            pm2 start npm --name "${APP_NAME}" -- start
-                        '
-                    """
+                script {
+                    withCredentials([sshUserPrivateKey(credentialsId: "${EC2_SSH_KEY}", keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+                        sh """
+                            # Set proper permissions for the SSH key
+                            chmod 600 \$SSH_KEY
+                            
+                            # Test SSH connection first
+                            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${EC2_USER}@${EC2_HOST} 'echo "SSH connection successful"'
+                            
+                            # Sync files to EC2 (excluding sensitive files)
+                            rsync -avz --delete \
+                                -e "ssh -i \$SSH_KEY -o StrictHostKeyChecking=no" \
+                                --exclude '.git' \
+                                --exclude 'node_modules' \
+                                --exclude '.env' \
+                                --exclude '*.log' \
+                                ./ ${EC2_USER}@${EC2_HOST}:/home/${EC2_USER}/${APP_NAME}/
+                            
+                            # Deploy on EC2
+                            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                                cd /home/${EC2_USER}/${APP_NAME} &&
+                                
+                                # Install dependencies
+                                npm install --production &&
+                                
+                                # Install PM2 if not already installed
+                                which pm2 || npm install -g pm2 &&
+                                
+                                # Stop existing app (ignore errors if not running)
+                                pm2 stop ${APP_NAME} || true &&
+                                pm2 delete ${APP_NAME} || true &&
+                                
+                                # Start the application
+                                pm2 start npm --name '${APP_NAME}' -- start &&
+                                pm2 save &&
+                                pm2 list
+                            "
+                        """
+                    }
                 }
             }
         }
+    }
 
         stage('Health Check via ELB') {
             steps {
