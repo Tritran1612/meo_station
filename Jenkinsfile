@@ -5,7 +5,7 @@ pipeline {
         APP_NAME     = 'meo-stationery'
         EC2_SSH_KEY  = 'ec2-ssh-key' // Jenkins credentialsId for private key
         EC2_USER     = 'ec2-user'
-        EC2_HOST     = 'your-ec2-public-ip-or-dns'
+        EC2_HOST     = '13.236.137.125'
     }
 
     tools {
