@@ -120,23 +120,10 @@ pipeline {
                 script {
                     sh """
                         echo "Waiting for application to start..."
-                        sleep 15
+                        sleep 10
                         
-                        # Multiple health check attempts
-                        for i in {1..3}; do
-                            echo "Health check attempt \$i..."
-                            if curl -f --connect-timeout 5 --max-time 10 http://${EC2_HOST}:3000; then
-                                echo "Health check passed!"
-                                exit 0
-                            else
-                                echo "Health check failed, attempt \$i"
-                                sleep 5
-                            fi
-                        done
-                        
-                        echo "All health checks failed, but deployment may still be successful"
-                        # Don't fail the pipeline for health check issues
-                        exit 0
+                        # Check if the application is responding
+                        curl -f http://${EC2_HOST}:3000 || echo "Health check failed, but continuing..."
                     """
                 }
             }
@@ -148,17 +135,9 @@ pipeline {
         }
         success {
             echo '✅ Deployment successful!'
-            script {
-                // Optional: Send notification
-                // slackSend channel: '#deployments', message: "✅ ${APP_NAME} deployed successfully to ${EC2_HOST}"
-            }
         }
         failure {
             echo '❌ Deployment failed!'
-            script {
-                // Optional: Send failure notification
-                // slackSend channel: '#deployments', message: "❌ ${APP_NAME} deployment failed. Check Jenkins logs."
-            }
         }
     }
 }
