@@ -1,10 +1,9 @@
-# 1️⃣ Fix README.md conflict — keep your detailed README, overwrite the file
-cat > README.md <<'EOF'
+
 # Meo Stationery 📝✏️
 
 A modern e-commerce platform for stationery products built with Next.js, Prisma, and PostgreSQL, designed for AWS cloud deployment.
 
-![Architecture Diagram](./image.png)
+![Architecture Diagram](./three-tier.drawio.png)
 
 ## 🏗️ Architecture Overview
 
