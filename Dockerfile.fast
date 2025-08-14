@@ -1,0 +1,67 @@
+# Multi-stage Docker build for FAST startup
+# Optimized for EKS deployment with pre-installed dependencies
+
+FROM node:18-alpine AS base
+WORKDIR /app
+
+# Install system dependencies
+RUN apk add --no-cache libc6-compat openssl
+
+# Dependencies stage - with better caching
+FROM base AS deps
+COPY package*.json ./
+COPY prisma ./prisma
+
+# Install ALL dependencies (including dev) for build
+RUN npm ci
+
+# Install Prisma CLI globally for runtime
+RUN npm install -g prisma@6.13.0
+
+# Generate Prisma client
+RUN npx prisma generate
+
+# Builder stage
+FROM base AS builder
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/node_modules/.prisma ./node_modules/.prisma
+COPY . .
+
+# Build the application
+ENV NEXT_TELEMETRY_DISABLED 1
+RUN npm run build
+
+# Production stage - lightweight and FAST
+FROM base AS runner
+ENV NODE_ENV production
+ENV NEXT_TELEMETRY_DISABLED 1
+
+# Create user
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+# Install only Prisma CLI (pre-compiled, much faster)
+RUN npm install -g prisma@6.13.0
+
+# Copy built application
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Copy Prisma files with correct permissions
+COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
+
+# Copy optimized startup script
+COPY --chown=nextjs:nodejs start.sh ./start.sh
+RUN chmod +x ./start.sh
+
+USER nextjs
+
+EXPOSE 3000
+ENV PORT 3000
+ENV HOSTNAME "0.0.0.0"
+
+# Fast startup with pre-installed Prisma
+ENTRYPOINT ["./start.sh"]
+CMD ["node", "server.js"]
